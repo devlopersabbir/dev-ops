@@ -15,7 +15,7 @@ jobs:
             - name: Code checkout on test machine
               uses: actions/checkout@v3
 
-            - name: Setup nodejs
+            - name: Setup Node.js
               uses: actions/setup-node@v3
               with:
                   node-version: 20
@@ -38,62 +38,66 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v3
 
-            - name: login to docker hub
+            - name: Login to Docker Hub
               uses: docker/login-action@v3
               with:
                   username: ${{ secrets.DOCKER_USERNAME }}
                   password: ${{ secrets.DOCKER_PASSWORD }}
-            - name: Setup docker
+
+            - name: Setup Docker
               uses: docker/setup-docker-action@v4
 
-            - name: build image
+            - name: Build image
               run: |
-                  docker build --no-cache -t ${{ secrets.DOCKER_USERNAME }}/${{ secrets.PACKAGE }}:latest .
-            - name: push image
+                  docker build --no-cache \
+                    -t ${{ secrets.DOCKER_USERNAME }}/${{ secrets.PACKAGE }}:latest .
+
+            - name: Push image
               run: |
                   docker push ${{ secrets.DOCKER_USERNAME }}/${{ secrets.PACKAGE }}:latest
 
     deploy:
-        name: deploy to vps
+        name: Deploy to VPS
         runs-on: ubuntu-latest
         if: github.ref == 'refs/heads/main'
 
         steps:
-            - name: checkout
+            - name: Checkout
               uses: actions/checkout@v3
 
-            - name: Test ssh connection to vps
+            - name: Test SSH connection to VPS
               uses: appleboy/ssh-action@v1.0.3
               with:
                   host: ${{ secrets.HOST }}
                   username: ${{ secrets.USERNAME }}
                   key: ${{ secrets.VPS_SSH_KEY }}
                   script: |
-                      echo "Successfully connected to vps"
+                      echo "Successfully connected to VPS"
                       uptime
 
-            - name: Copy compose file
+            - name: Copy docker-compose file
               uses: appleboy/scp-action@v0.1.7
               with:
                   host: ${{ secrets.HOST }}
                   username: ${{ secrets.USERNAME }}
                   key: ${{ secrets.VPS_SSH_KEY }}
-                  source: "docker-compose.yaml"
-                  target: "/home/${{secrets.USERNAME}}/projects/${{secrets.PACKAGE}}"
+                  source: docker-compose.yaml
+                  target: /home/${{ secrets.USERNAME }}/projects/${{ secrets.PACKAGE }}
 
-            - name: Deploy to vps
+            - name: Deploy to VPS
               uses: appleboy/ssh-action@v1.0.3
               with:
                   host: ${{ secrets.HOST }}
                   username: ${{ secrets.USERNAME }}
                   key: ${{ secrets.VPS_SSH_KEY }}
                   script: |
-                      cd ~/projects/${{secrets.PACKAGE}}
+                      cd ~/projects/${{ secrets.PACKAGE }}
                       docker compose --profile prod pull
                       docker compose --profile prod down
                       docker image prune -af
                       docker compose --profile prod up -d --force-recreate
-            - name: Restart caddy server
+
+            - name: Restart Caddy server
               uses: appleboy/ssh-action@v1.0.3
               with:
                   host: ${{ secrets.HOST }}
@@ -101,7 +105,8 @@ jobs:
                   key: ${{ secrets.VPS_SSH_KEY }}
                   script: |
                       sudo systemctl restart caddy
-                      echo "Successfully restarted caddy server"
+                      echo "Successfully restarted Caddy server"
+
     deploy-check:
         name: Check if deploy was successful
         runs-on: ubuntu-latest
@@ -109,46 +114,55 @@ jobs:
         needs: [deploy]
 
         steps:
-            - name: login to the vps
+            - name: Verify containers and app health
               uses: appleboy/ssh-action@v1.0.3
               with:
                   host: ${{ secrets.HOST }}
                   username: ${{ secrets.USERNAME }}
                   key: ${{ secrets.VPS_SSH_KEY }}
                   script: |
-                      cd /home/${{secrets.USERNAME}}/projects/${{secrets.PACKAGE}}
-                      container_status=$(docker compose --profile prod ps -q) | xargs docker inspect -f-format '{{.State.Status}}' | grep -vE 'exited|restarting'
-                      if [[ -z "$container_status"]]; then
-                        echo "Error: Containers are not running"
+                      cd /home/${{ secrets.USERNAME }}/projects/${{ secrets.PACKAGE }}
+
+                      container_status=$(docker compose ps -q | \
+                        xargs docker inspect --format '{{ .State.Status }}' | \
+                        grep -vE 'exited|restarting')
+
+                      if [[ -z "$container_status" ]]; then
+                        echo "One or more containers are not running properly."
                         exit 1
-                      else
-                        echo "Containers are running"
                       fi
-                      reponsee_code=$(curl --write-out "%{http_code}" --silent --output /dev/null http://localhost:${{secrets.PORT}})/api/health)
-                      if [[ "$response_code" -eq 200]]; then
-                        echo "Successfully checked if the containers are running"
+
+                      echo "All containers are running."
+
+                      response_code=$(curl --write-out "%{http_code}" \
+                        --silent \
+                        --output /dev/null \
+                        http://localhost:${{ secrets.PORT }}/api/v1)
+
+                      if [[ "$response_code" -eq 200 ]]; then
+                        echo "App is responding with HTTP 200."
                       else
-                        echo "Error: app is not reponding currently (HTTP status: $response_code)"
+                        echo "App health check failed (HTTP $response_code)."
                         exit 1
                       fi
 
     notify:
         name: Notify on failure
         runs-on: ubuntu-latest
+        needs: [build-push, deploy, deploy-check]
         if: |
             always() &&
             (needs.build-push.result == 'failure' ||
-            needs.deploy.result == 'failure' ||
-            needs.deploy-check.result == 'failure') &&
+             needs.deploy.result == 'failure' ||
+             needs.deploy-check.result == 'failure') &&
             (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
 
-        needs: [build-push, deploy, deploy-check]
         steps:
-            - name: send telegram message
+            - name: Send Telegram message
               uses: devlopersabbir/telegram-action-notifier@v1.0.1
               with:
                   bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
                   chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
                   message: |
                       <b>🚨 Deployment Failed!</b>
-                      Please check logs immediately.
+                      Please check GitHub Actions logs immediately.
