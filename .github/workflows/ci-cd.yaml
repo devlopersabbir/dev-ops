@@ -9,7 +9,7 @@ jobs:
     test:
         name: Test Machine
         runs-on: ubuntu-latest
-        if: github.ref != "refs/heads/main" && github.ref != "refs/heads/dev"
+        if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev'
 
         steps:
             - name: Code checkout on test machine
@@ -32,7 +32,7 @@ jobs:
     build-push:
         name: Build and push image
         runs-on: ubuntu-latest
-        if: github.ref == "refs/heads/dev"
+        if: github.ref == 'refs/heads/dev'
 
         steps:
             - name: Checkout
