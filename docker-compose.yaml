@@ -1,0 +1,48 @@
+services:
+    app:
+        image: devlopersabbir/template:latest
+        container_name: template_container
+        restart: unless-stopped
+        platform: linux/amd64
+        profiles:
+            - prod
+        build:
+            context: .
+            dockerfile: Dockerfile
+        ports:
+            - "${PORT}:${PORT}"
+        env_file:
+            - .env
+        depends_on:
+            db:
+                condition: service_healthy
+        networks:
+            - template_network
+
+    db:
+        image: postgres:16-alpine
+        container_name: template_db
+        profiles:
+            - prod
+            - dev
+        restart: unless-stopped
+        environment:
+            POSTGRES_USER: ${PG_USERNAME}
+            POSTGRES_PASSWORD: ${PG_PASSWORD}
+            POSTGRES_DB: ${PG_DATABASE}
+            PGDATA: /var/lib/postgresql/data/pgdata
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${PG_USERNAME}"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        networks:
+            - template_network
+
+volumes:
+    postgres_data:
+networks:
+    template_network:
+        driver: bridge
