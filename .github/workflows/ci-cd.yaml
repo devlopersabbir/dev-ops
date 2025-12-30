@@ -52,3 +52,98 @@ jobs:
             - name: push image
               run: |
                   docker push ${{ secrets.DOCKER_USERNAME }}/${{ secrets.PACKAGE }}:latest
+
+    deploy:
+        name: deploy to vps
+        runs-on: ubuntu-latest
+        if: github.ref == 'refs/heads/main'
+
+        steps:
+            - name: Test ssh connection to vps
+              uses: appleboy/ssh-action@v1.0.3
+              with:
+                  host: ${{ secrets.HOST }}
+                  username: ${{ secrets.USERNAME }}
+                  key: ${{ secrets.VPS_SSH_KEY }}
+                  script: |
+                      echo "Successfully connected to vps"
+                      uptime
+            - name: Copy compose file
+              uses: appleboy/scp-action@v0.1.7
+              with:
+                  host: ${{ secrets.HOST }}
+                  username: ${{ secrets.USERNAME }}
+                  key: ${{ secrets.VPS_SSH_KEY }}
+                  source: "docker-compose.yaml"
+                  target: "~/projects/${{secrets.PACKAGE}}"
+            - name: Deploy to vps
+              uses: appleboy/ssh-action@v1.0.3
+              with:
+                  host: ${{ secrets.HOST }}
+                  username: ${{ secrets.USERNAME }}
+                  key: ${{ secrets.VPS_SSH_KEY }}
+                  script: |
+                      cd ~/projects/${{secrets.PACKAGE}}
+                      docker compose --profile prod pull
+                      docker compose --profile prod down
+                      docker image prune -af
+                      docker compose --profile prod up -d --force-recreate
+            - name: Restart caddy server
+              uses: appleboy/ssh-action@v1.0.3
+              with:
+                  host: ${{ secrets.HOST }}
+                  username: ${{ secrets.USERNAME }}
+                  key: ${{ secrets.VPS_SSH_KEY }}
+                  script: |
+                      sudo systemctl restart caddy
+                      echo "Successfully restarted caddy server"
+    deploy-check:
+        name: Check if deploy was successful
+        runs-on: ubuntu-latest
+        if: github.ref == 'refs/heads/main'
+        needs: [deploy]
+
+        steps:
+            - name: login to the vps
+              uses: appleboy/ssh-action@v1.0.3
+              with:
+                  host: ${{ secrets.HOST }}
+                  username: ${{ secrets.USERNAME }}
+                  key: ${{ secrets.VPS_SSH_KEY }}
+                  script: |
+                      cd ~/projects/${{secrets.PACKAGE}}
+                      container_status=$(docker compose --profile prod ps -q) | xargs docker inspect -f-format '{{.State.Status}}' | grep -vE 'exited|restarting'
+                      if [[ -z "$container_status"]]; then
+                        echo "Error: Containers are not running"
+                        exit 1
+                      else
+                        echo "Containers are running"
+                      fi
+                      reponsee_code=$(curl --write-out "%{http_code}" --silent --output /dev/null http://localhost:${{secrets.PORT}})/api/health)
+                      if [[ "$response_code" -eq 200]]; then
+                        echo "Successfully checked if the containers are running"
+                      else
+                        echo "Error: app is not reponding currently (HTTP status: $response_code)"
+                        exit 1
+                      fi
+
+    notify:
+        name: Notify on failure
+        runs-on: ubuntu-latest
+        if: |
+            always() &&
+            (needs.build-push.result == 'failure' ||
+            needs.deploy.result == 'failure' ||
+            needs.deploy-check.result == 'failure') &&
+            (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+
+        needs: [build-push, deploy, deploy-check]
+        steps:
+            - name: send telegram message
+              uses: devlopersabbir/telegram-action-notifier@v1.0.1
+              with:
+                  bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+                  chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+                  message: |
+                      <b>🚨 Deployment Failed!</b>
+                      Please check logs immediately.
