@@ -14,7 +14,7 @@ export class AppController {
             },
         },
     })
-    @Get("api/health")
+    @Get("api/v1")
     async getHealthCheck(@Res() res: Response) {
         res.status(200).json({ status: "ok" });
     }
